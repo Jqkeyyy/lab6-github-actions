@@ -1,0 +1,17 @@
+name: Validate application build
+on:
+  workflow_dispatch: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+      - run: mvn --batch-mode clean verify
+        working-directory: spring-boot-hello-world-example
