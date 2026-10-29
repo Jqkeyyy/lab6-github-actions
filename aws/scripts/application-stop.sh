@@ -1,8 +1,5 @@
 #!/bin/bash
-set -x
-
-# System control will return either "active" or "inactive".
-tomcat_running=$(systemctl is-active tomcat)
-if [ "$tomcat_running" == "active" ]; then
-    service tomcat stop
+set -euo pipefail
+if systemctl is-active --quiet tomcat; then
+  systemctl stop tomcat
 fi

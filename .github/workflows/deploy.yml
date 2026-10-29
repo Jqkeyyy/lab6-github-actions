@@ -3,11 +3,14 @@ name: Build and Deploy
 on:
   workflow_dispatch: {}
 
-env:
-  applicationfolder: spring-boot-hello-world-example
-  AWS_REGION: ##region##
-  S3BUCKET: ##s3-bucket## 
+concurrency:
+  group: ec2-deployment
+  cancel-in-progress: false
 
+env:
+  AWS_REGION: us-east-1
+  S3BUCKET: ${{ vars.DEPLOYMENT_BUCKET }}
+  applicationfolder: spring-boot-hello-world-example
 
 jobs:
   build:
@@ -17,47 +20,45 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v2
-        name: Checkout Repository
-
-      - uses: aws-actions/configure-aws-credentials@v1
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+      - name: Build WAR
+        working-directory: ${{ env.applicationfolder }}
+        run: mvn --batch-mode clean verify
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           role-to-assume: ${{ secrets.IAMROLE_GITHUB }}
-          role-session-name: GitHub-Action-Role
           aws-region: ${{ env.AWS_REGION }}
+      - name: Upload artifact to S3
+        run: aws s3 cp "$applicationfolder/target/SpringBootHelloWorldExampleApplication.war" "s3://$S3BUCKET/SpringBootHelloWorldExampleApplication.war"
 
-      - name: Set up JDK 1.8
-        uses: actions/setup-java@v1
-        with:
-          java-version: 1.8
-
-      - name: chmod
-        run: chmod -R +x ./.github
-
-      - name: Build and Package Maven
-        id: package
-        working-directory: ${{ env.applicationfolder }}
-        run: $GITHUB_WORKSPACE/.github/scripts/build.sh
-
-      - name: Upload Artifact to s3
-        working-directory: ${{ env.applicationfolder }}/target
-        run: aws s3 cp *.war s3://${{ env.S3BUCKET }}/
-        
   deploy:
+    name: Deploy to EC2
     needs: build
     runs-on: ubuntu-latest
-    environment: Dev
     permissions:
       id-token: write
       contents: read
     steps:
-    - uses: actions/checkout@v2
-    - uses: aws-actions/configure-aws-credentials@v1
-      with:
-        role-to-assume: ${{ secrets.IAMROLE_GITHUB }}
-        role-session-name: GitHub-Action-Role
-        aws-region: ${{ env.AWS_REGION }}
-    - run: |
-        echo "Deploying branch ${{ env.GITHUB_REF }} to ${{ github.event.inputs.environment }}"
-        commit_hash=`git rev-parse HEAD`
-        aws deploy create-deployment --application-name CodeDeployAppNameWithASG --deployment-group-name CodeDeployGroupName --github-location repository=$GITHUB_REPOSITORY,commitId=$commit_hash --ignore-application-stop-failures
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ secrets.IAMROLE_GITHUB }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Deploy and wait for success
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          deployment_id=$(aws deploy create-deployment \
+            --application-name CodeDeployAppNameWithASG \
+            --deployment-group-name CodeDeployGroupName \
+            --github-location "repository=$REPOSITORY,commitId=$COMMIT_SHA" \
+            --query deploymentId --output text)
+          echo "Deployment: $deployment_id" >> "$GITHUB_STEP_SUMMARY"
+          aws deploy wait deployment-successful --deployment-id "$deployment_id"
+          aws deploy get-deployment --deployment-id "$deployment_id" \
+            --query 'deploymentInfo.{ID:deploymentId,Status:status,Completed:completeTime}'
